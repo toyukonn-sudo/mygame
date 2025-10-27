@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>シンプルなブラウザゲーム — かわす！</title>
+  <meta name="description" content="シンプルな回避アクションゲーム。キーボード（← → / A D）かタッチで操作します。" />
+  <style>
+    :root{--bg:#081226;--panel:#0b1220;--accent:#7c3aed;--muted:#9aa4b2}
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;font-family:Inter, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;color:#e6eef8;background:linear-gradient(180deg,var(--bg),#041126);}
+    .wrap{max-width:980px;margin:24px auto;padding:18px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+    h1{font-size:20px;margin:0}
+    .meta{color:var(--muted);font-size:13px}
+    .game-area{display:grid;grid-template-columns:1fr 300px;gap:18px;margin-top:18px}
+    .card{background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);padding:14px;border-radius:12px;border:1px solid rgba(255,255,255,0.04)}
+    canvas{width:100%;height:480px;border-radius:10px;display:block;background:linear-gradient(180deg,#071026,#02121f)}
+    .controls{display:flex;flex-direction:column;gap:12px}
+    .btn{padding:10px;border-radius:10px;border:none;background:linear-gradient(90deg,var(--accent),#2dd4bf);color:#041127;font-weight:700;cursor:pointer}
+    .small{font-size:13px;color:var(--muted)}
+    .touchpad{height:80px;border-radius:10px;background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);display:flex;align-items:center;justify-content:space-around}
+    .touchbtn{flex:1;margin:6px;padding:14px;border-radius:10px;background:rgba(255,255,255,0.02);text-align:center;user-select:none}
+    footer{margin-top:16px;color:var(--muted);font-size:13px}
+    @media (max-width:900px){.game-area{grid-template-columns:1fr}.controls{order:2}.card{margin-top:12px}.canvas-wrapper canvas{height:360px}}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div>
+        <h1>かわす！ — シンプル回避アクション</h1>
+        <div class="meta">← → / A D で移動。障害物を避けてハイスコアを目指そう！</div>
+      </div>
+      <div>
+        <button id="restartBtn" class="btn">リスタート</button>
+      </div>
+    </header>
+
+    <section class="game-area">
+      <div class="card canvas-wrapper">
+        <canvas id="gameCanvas" width="800" height="480" role="img" aria-label="回避ゲームのキャンバス"></canvas>
+        <div class="small" style="margin-top:8px">スワイプまたは左右ボタンで動けます。障害物にぶつかるとゲームオーバー。</div>
+      </div>
+
+      <aside class="card controls">
+        <div><b>Score</b>: <span id="score">0</span></div>
+        <div><b>High Score</b>: <span id="high">0</span></div>
+        <div style="margin-top:8px"><b>難易度</b></div>
+        <input id="difficulty" type="range" min="1" max="5" value="2">
+        <div class="small">難易度が上がるほど障害物が速く、数が増えます。</div>
+
+        <div style="margin-top:12px"><b>操作（タッチ向け）</b></div>
+        <div class="touchpad" id="touchpad">
+          <div class="touchbtn" id="leftBtn">◀︎</div>
+          <div class="touchbtn" id="stopBtn">■</div>
+          <div class="touchbtn" id="rightBtn">▶︎</div>
+        </div>
+
+        <div style="margin-top:12px"><button id="shareBtn" class="btn">スコアをコピー</button></div>
+        <div style="margin-top:12px"><small>ローカルにハイスコアを保存します。</small></div>
+      </aside>
+    </section>
+
+    <footer>© サンプルゲーム — 必要ならアートや難易度調整します。</footer>
+  </main>
+
+  <script>
+    // --- 基本設定 ---
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    let cw = canvas.width, ch = canvas.height;
+
+    const scoreEl = document.getElementById('score');
+    const highEl = document.getElementById('high');
+    const restartBtn = document.getElementById('restartBtn');
+    const difficultyInput = document.getElementById('difficulty');
+    const shareBtn = document.getElementById('shareBtn');
+
+    // プレイヤー
+    const player = { x: cw/2, y: ch - 64, w: 48, h: 48, speed: 5, vx:0 };
+    let keys = {};
+
+    // 障害物リスト
+    let obstacles = [];
+    let spawnTimer = 0;
+    let score = 0;
+    let high = localStorage.getItem('simpleEvadeHigh') || 0;
+    highEl.textContent = high;
+    let running = true;
+    let lastTime = 0;
+
+    // 難易度によるパラメータ
+    function getParams(){
+      const lvl = parseInt(difficultyInput.value,10);
+      return {
+        spawnInterval: Math.max(40 - lvl*6, 14), // frames
+        baseSpeed: 2 + lvl*0.7,
+        obstacleSizeRange: [24, 80]
+      };
+    }
+
+    // リサイズ対応（表示サイズはCSSで伸縮、内部解像度固定）
+    function resize(){
+      // keep logical resolution for consistent gameplay
+    }
+
+    // 障害物生成
+    function spawnObstacle(){
+      const p = getParams();
+      const w = randInt(p.obstacleSizeRange[0], p.obstacleSizeRange[1]);
+      const x = randInt(20, cw - 20 - w);
+      const speed = p.baseSpeed + Math.random()*1.5;
+      obstacles.push({x, y: -w, w, h: w, speed});
+    }
+
+    // ランダム整数
+    function randInt(a,b){return Math.floor(Math.random()*(b-a+1))+a}
+
+    // 衝突判定
+    function isCollide(a,b){
+      return !(a.x + a.w < b.x || a.x > b.x + b.w || a.y + a.h < b.y || a.y > b.y + b.h);
+    }
+
+    // ゲームオーバー
+    function gameOver(){
+      running = false;
+      if(score > high){
+        high = score; localStorage.setItem('simpleEvadeHigh', high);
+        highEl.textContent = high;
+      }
+      // show simple overlay
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(0,0,cw,ch);
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'center';
+      ctx.font = '28px sans-serif';
+      ctx.fillText('ゲームオーバー', cw/2, ch/2 - 8);
+      ctx.font = '16px sans-serif';
+      ctx.fillText(`スコア: ${score}`, cw/2, ch/2 + 18);
+      ctx.fillText('リスタートで再挑戦', cw/2, ch/2 + 46);
+    }
+
+    // リセット
+    function reset(){
+      obstacles = [];
+      spawnTimer = 0;
+      score = 0;
+      scoreEl.textContent = score;
+      player.x = cw/2 - player.w/2;
+      running = true;
+      lastTime = performance.now();
+      requestAnimationFrame(loop);
+    }
+
+    // メインループ
+    function loop(ts){
+      if(!lastTime) lastTime = ts;
+      const dt = ts - lastTime;
+      lastTime = ts;
+
+      update();
+      render();
+
+      if(running) requestAnimationFrame(loop);
+    }
+
+    function update(){
+      // 移動入力
+      if(keys['ArrowLeft'] || keys['a'] || keys['A']) player.vx = -player.speed;
+      else if(keys['ArrowRight'] || keys['d'] || keys['D']) player.vx = player.speed;
+      else player.vx = 0;
+
+      player.x += player.vx;
+      player.x = Math.max(6, Math.min(cw - player.w - 6, player.x));
+
+      // spawn
+      const params = getParams();
+      spawnTimer++;
+      if(spawnTimer >= params.spawnInterval){
+        spawnTimer = 0;
+        spawnObstacle();
+      }
+
+      // move obstacles
+      for(let i=obstacles.length-1;i>=0;i--){
+        const ob = obstacles[i];
+        ob.y += ob.speed;
+        // remove
+        if(ob.y > ch + 100){ obstacles.splice(i,1); score++; scoreEl.textContent = score; }
+        // collision
+        if(isCollide({x:player.x,y:player.y,w:player.w,h:player.h}, ob)){
+          gameOver();
+        }
+      }
+    }
+
+    function render(){
+      // clear
+      ctx.clearRect(0,0,cw,ch);
+
+      // background grid
+      ctx.fillStyle = '#021628';
+      ctx.fillRect(0,0,cw,ch);
+      // moving gradient ground
+      const g = ctx.createLinearGradient(0,ch*0.6,0,ch);
+      g.addColorStop(0,'rgba(124,58,237,0.04)');
+      g.addColorStop(1,'rgba(45,212,191,0.02)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0,ch*0.6,cw,ch*0.4);
+
+      // player (rounded)
+      roundRect(ctx, player.x, player.y, player.w, player.h, 8, true, false, '#ffffff', '#08314b');
+
+      // obstacles
+      obstacles.forEach(ob=>{
+        // shadow
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fillRect(ob.x+4, ob.y+ob.h-6, ob.w, 6);
+        // body
+        const grad = ctx.createLinearGradient(ob.x, ob.y, ob.x, ob.y+ob.h);
+        grad.addColorStop(0, 'rgba(255,85,85,0.95)');
+        grad.addColorStop(1, 'rgba(200,30,30,0.9)');
+        roundRect(ctx, ob.x, ob.y, ob.w, ob.h, 6, true, false, grad, null);
+      });
+
+      // HUD
+      ctx.fillStyle = '#e6eef8';
+      ctx.font = '18px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText('Score: ' + score, 12, 24);
+      ctx.fillStyle = '#9aa4b2';
+      ctx.fillText('High: ' + high, 12, 44);
+    }
+
+    // rounded rectangle helper
+    function roundRect(ctx,x,y,w,h,r,fill,stroke,fillStyle,strokeStyle){
+      if(typeof r === 'undefined') r=6;
+      ctx.beginPath();
+      ctx.moveTo(x+r,y);
+      ctx.arcTo(x+w,y,x+w,y+h,r);
+      ctx.arcTo(x+w,y+h,x,y+h,r);
+      ctx.arcTo(x,y+h,x,y,r);
+      ctx.arcTo(x,y,x+w,y,r);
+      ctx.closePath();
+      if(fill){ ctx.fillStyle = fillStyle || '#fff'; ctx.fill(); }
+      if(stroke){ ctx.strokeStyle = strokeStyle || '#000'; ctx.stroke(); }
+    }
+
+    // イベント
+    window.addEventListener('keydown', e=>{ keys[e.key]=true; });
+    window.addEventListener('keyup', e=>{ keys[e.key]=false; });
+
+    restartBtn.addEventListener('click', ()=>{ reset(); });
+    difficultyInput.addEventListener('input', ()=>{/* difficulty changes automatically via getParams */});
+
+    // タッチ操作
+    const leftBtn = document.getElementById('leftBtn');
+    const rightBtn = document.getElementById('rightBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    leftBtn.addEventListener('touchstart', ()=>{ keys['ArrowLeft']=true; });
+    leftBtn.addEventListener('touchend', ()=>{ keys['ArrowLeft']=false; });
+    rightBtn.addEventListener('touchstart', ()=>{ keys['ArrowRight']=true; });
+    rightBtn.addEventListener('touchend', ()=>{ keys['ArrowRight']=false; });
+    stopBtn.addEventListener('touchstart', ()=>{ keys['ArrowLeft']=false; keys['ArrowRight']=false; });
+
+    // クリックも対応
+    leftBtn.addEventListener('mousedown', ()=>{ keys['ArrowLeft']=true; });
+    leftBtn.addEventListener('mouseup', ()=>{ keys['ArrowLeft']=false; });
+    rightBtn.addEventListener('mousedown', ()=>{ keys['ArrowRight']=true; });
+    rightBtn.addEventListener('mouseup', ()=>{ keys['ArrowRight']=false; });
+    stopBtn.addEventListener('mousedown', ()=>{ keys['ArrowLeft']=false; keys['ArrowRight']=false; });
+
+    // スワイプで左右移動（簡易）
+    let touchStartX = null;
+    const tp = document.getElementById('touchpad');
+    tp.addEventListener('touchstart', (e)=>{ touchStartX = e.touches[0].clientX; });
+    tp.addEventListener('touchmove', (e)=>{
+      if(touchStartX === null) return;
+      const dx = e.touches[0].clientX - touchStartX;
+      if(dx < -30){ keys['ArrowLeft']=true; keys['ArrowRight']=false; }
+      else if(dx > 30){ keys['ArrowRight']=true; keys['ArrowLeft']=false; }
+    });
+    tp.addEventListener('touchend', ()=>{ keys['ArrowLeft']=false; keys['ArrowRight']=false; touchStartX=null; });
+
+    // 共有ボタン
+    shareBtn.addEventListener('click', ()=>{
+      const text = `My score: ${score} / High: ${high} — かわす！`; 
+      navigator.clipboard.writeText(text).then(()=>{ alert('スコアをコピーしました'); }, ()=>{ alert(text); });
+    });
+
+    // 画面クリックで左右に移動（簡易）
+    canvas.addEventListener('mousedown', (e)=>{
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      if(x < rect.width/2) keys['ArrowLeft']=true; else keys['ArrowRight']=true;
+    });
+    window.addEventListener('mouseup', ()=>{ keys['ArrowLeft']=false; keys['ArrowRight']=false; });
+
+    // 初期開始
+    function init(){
+      player.x = cw/2 - player.w/2;
+      lastTime = performance.now();
+      requestAnimationFrame(loop);
+    }
+
+    // canvasの物理サイズ調整（高DPI対応）
+    function adjustCanvas(){
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      cw = Math.floor(rect.width * dpr);
+      ch = Math.floor(rect.height * dpr);
+      canvas.width = cw;
+      canvas.height = ch;
+      player.y = ch - 64 * dpr;
+      player.w = Math.floor(48 * dpr);
+      player.h = Math.floor(48 * dpr);
+    }
+
+    // resize observer
+    function handleResize(){
+      // set canvas css height based on attribute to keep aspect ratio
+      const wrapper = document.querySelector('.canvas-wrapper');
+      const cssWidth = wrapper.clientWidth;
+      const desiredHeight = Math.max(320, Math.min(640, Math.round(cssWidth * 0.6)));
+      canvas.style.height = desiredHeight + 'px';
+      canvas.style.width = '100%';
+      adjustCanvas();
+    }
+
+    window.addEventListener('resize', ()=>{ handleResize(); });
+    window.addEventListener('orientationchange', ()=>{ handleResize(); });
+
+    // start
+    handleResize();
+    init();
+
+  </script>
+</body>
+</html>
