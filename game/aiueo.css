@@ -1,0 +1,5 @@
+body { margin:0; font-family:sans-serif; background:#081226; color:#fff; display:flex; flex-direction:column; align-items:center; }
+canvas { display:block; margin:20px auto; background:linear-gradient(180deg,#071026,#02121f); border-radius:10px; }
+.ui { display:flex; flex-direction:column; align-items:center; gap:8px; }
+button { padding:8px 14px; border:none; border-radius:8px; background:#7c3aed; color:#fff; cursor:pointer; }
+input[type="range"] { width:200px; }
